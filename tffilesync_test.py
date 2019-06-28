@@ -42,7 +42,7 @@ class TestSync(unittest.TestCase):
             self.assertEqual(_read_file(remotedir + '/f0.txt'), 'hello0')
             self.assertEqual(_read_file(remotedir + '/f1.txt'), 'hello1')
 
-            time.sleep(5)
+            time.sleep(2)
             with open(localdir + '/f1.txt', 'w') as fd:
                 fd.write('hello2')
             _kick_sync(syncer)

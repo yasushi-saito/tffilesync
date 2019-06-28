@@ -1,3 +1,16 @@
+"""
+Syncer copies a remote directory to a another directory at the start.
+It then continuously watches the latter directory and reflects any changes to it to the remote directory.
+
+A typical usage is to sync TF checkpoint files to S3. Example:
+
+syncer := Syncer(remote_dir='s3://mybucket/tfworkdir', local_dir='/tmp/tf')
+.... syncer will automatically copy s3://mybucket/tfworkdir to /tmp/tf
+.... run tensorflow using /tmp/tf as the workdir.
+.... syncer will automatically sync changes to /tmp/tf to s3://mybucket/tfworkdir
+syncer.stop() # call once all the computation is done
+"""
+
 import tensorflow as tf
 import tensorflow.io.gfile as gfile
 import tensorflow.compat.v1.logging as logging
@@ -36,20 +49,6 @@ def _copy_file(src_dir: str, dest_dir: str, file_name: str):
             time.sleep(1.5**retries)
 
 
-def _has_file(dir_ents: _DirEntries, name: str, want_stat: _FileStat):
-    if name not in dir_ents:
-        return False
-    got_stat = dir_ents[name]
-    if got_stat.length != want_stat.length:
-        return False
-    got_mtime_s = got_stat.mtime_nsec // 1000000000
-    want_mtime_s = want_stat.mtime_nsec // 1000000000
-
-    if abs(got_mtime_s - want_mtime_s) > 3:
-        return False
-    return True
-
-
 _FULL_SYNC_INTERVAL_S = 6 * 60
 
 
@@ -64,38 +63,52 @@ class Syncer:
         gfile.makedirs(local_dir)
 
         remote_ents = _list_dir(remote_dir)
-        local_ents = _list_dir(local_dir)
-
         for name, ent in remote_ents.items():
-            if not _has_file(local_ents, name, ent):
-                _copy_file(remote_dir, local_dir, name)
+            _copy_file(remote_dir, local_dir, name)
 
         self._thread = threading.Thread(target=self._loop)
         self._thread.start()
 
-    def epoch(self) -> int:
-        with self._mu:
-            return self._epoch
-
     def stop(self) -> None:
+        """Stop the background thread. It blocks until the thread finishes."""
         with self._mu:
             self._stopping = True
             self._cond.notify()
         self._thread.join()
 
     def kick(self) -> None:
+        """Kick wakes up the background thread that watches the local directory. It does
+        not wait for the thread to finish syncing."""
         with self._mu:
             self._cond.notify()
 
+    def epoch(self) -> int:
+        """Returns the number of times the directory sync operation has run. Mainly for unittests"""
+        with self._mu:
+            return self._epoch
+
     def _loop(self) -> None:
+        def _has_file(dir_ents: _DirEntries, name: str, want_stat: _FileStat):
+            if name not in dir_ents:
+                return False
+            got_stat = dir_ents[name]
+            if got_stat.length != want_stat.length:
+                return False
+            if got_stat.mtime_nsec != want_stat.mtime_nsec:
+                return False
+            return True
+
         src_ents: _DirEntries = {}
         last_full_sync_time = time.time()
-        while True:
+        done = False
+        while not done:
             with self._mu:
                 self._epoch += 1
                 self._cond.wait(60.0)
                 if self._stopping:
-                    return
+                    # Do full sync for one last time
+                    src_ents = {}
+                    done = True
 
             now = time.time()
             if now - last_full_sync_time >= _FULL_SYNC_INTERVAL_S:
