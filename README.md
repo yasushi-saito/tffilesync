@@ -1,5 +1,8 @@
-Syncer copies a remote directory to a another directory at the start.
-It then continuously watches the latter directory and reflects any changes to it to the remote directory.
+Syncer copies a remote directory to a another directory at the start.  It then
+continuously watches the latter directory and reflects any changes to it to the
+remote directory.
+
+This code is in public domain.
 
 A typical usage is to sync TF checkpoint files to S3. Example:
 
